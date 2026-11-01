@@ -1,0 +1,81 @@
+name: CI/CD - Homologação e Produção
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+
+env:
+  IMAGE_NAME: minha-api
+
+jobs:
+  Build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Docker
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build da imagem
+        run: docker build -t ${{ env.IMAGE_NAME }}:latest .
+
+      - name: Salvar imagem
+        run: docker save ${{ env.IMAGE_NAME }}:latest -o minha-api.tar
+
+      - name: Enviar imagem
+        uses: actions/upload-artifact@v4
+        with:
+          name: imagem-docker
+          path: minha-api.tar
+
+  Deploy_Homologacao:
+    needs: Build
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    environment: homologacao
+
+    steps:
+      - name: Baixar imagem
+        uses: actions/download-artifact@v4
+        with:
+          name: imagem-docker
+
+      - name: Deploy na Homologação
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            docker load -i /tmp/minha-api.tar || true
+            docker stop minha-api-homol || true
+            docker rm minha-api-homol || true
+            docker run -d --name minha-api-homol -p 8080:8000 minha-api:latest
+
+  Deploy_Producao:
+    needs: Build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: producao
+
+    steps:
+      - name: Baixar imagem
+        uses: actions/download-artifact@v4
+        with:
+          name: imagem-docker
+
+      - name: Deploy na Produção
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            docker load -i /tmp/minha-api.tar || true
+            docker stop minha-api-prd || true
+            docker rm minha-api-prd || true
+            docker run -d --name minha-api-prd -p 80:8000 minha-api:latest
