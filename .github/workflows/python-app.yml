@@ -1,3 +1,4 @@
+
 name: CI/CD - Homologação e Produção
 
 on:
@@ -6,31 +7,47 @@ on:
       - develop
       - main
 
+permissions:
+  contents: read
+
 env:
   IMAGE_NAME: minha-api
 
 jobs:
+
   Build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Baixar código
+      - name: Baixar codigo
         uses: actions/checkout@v4
 
-      - name: Configurar Docker
-        uses: docker/setup-buildx-action@v3
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: Build da imagem
-        run: docker build -t ${{ env.IMAGE_NAME }}:latest .
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+
+      - name: Validar codigo
+        run: python -m compileall -q app
+
+      - name: Construir imagem Docker
+        run: |
+          docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
 
       - name: Salvar imagem
-        run: docker save ${{ env.IMAGE_NAME }}:latest -o minha-api.tar
+        run: |
+          docker save ${{ env.IMAGE_NAME }}:${{ github.sha }} -o minha-api.tar
 
-      - name: Enviar imagem
+      - name: Armazenar imagem
         uses: actions/upload-artifact@v4
         with:
           name: imagem-docker
           path: minha-api.tar
+          retention-days: 1
 
   Deploy_Homologacao:
     needs: Build
@@ -44,17 +61,29 @@ jobs:
         with:
           name: imagem-docker
 
-      - name: Deploy na Homologação
+      - name: Enviar imagem para EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: minha-api.tar
+          target: /home/ubuntu/
+
+      - name: Executar deploy HOMOL
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            docker load -i /tmp/minha-api.tar || true
-            docker stop minha-api-homol || true
-            docker rm minha-api-homol || true
-            docker run -d --name minha-api-homol -p 8080:8000 minha-api:latest
+            sudo docker load -i /home/ubuntu/minha-api.tar
+            sudo docker rm -f minha-api-homol || true
+            sudo docker run -d \
+              --restart unless-stopped \
+              --name minha-api-homol \
+              -p 8080:8000 \
+              minha-api:${{ github.sha }}
 
   Deploy_Producao:
     needs: Build
@@ -68,14 +97,26 @@ jobs:
         with:
           name: imagem-docker
 
-      - name: Deploy na Produção
+      - name: Enviar imagem para EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: minha-api.tar
+          target: /home/ubuntu/
+
+      - name: Executar deploy PRD
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            docker load -i /tmp/minha-api.tar || true
-            docker stop minha-api-prd || true
-            docker rm minha-api-prd || true
-            docker run -d --name minha-api-prd -p 80:8000 minha-api:latest
+            sudo docker load -i /home/ubuntu/minha-api.tar
+            sudo docker rm -f minha-api-prd || true
+            sudo docker run -d \
+              --restart unless-stopped \
+              --name minha-api-prd \
+              -p 80:8000 \
+              minha-api:${{ github.sha }}
